@@ -1,0 +1,44 @@
+{
+    "eventVersion": "1.05",
+    "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "principalId:principalName",
+        "arn": "arn:aws:sts::1234567890:assumed-role/roleName/principalName",
+        "accountId": "1234567890",
+        "accessKeyId": "accessKeyId",
+        "sessionContext": {
+            "sessionIssuer": {
+                "type": "Role",
+                "principalId": "principalId",
+                "arn": "arn:aws:iam::1234567890:role/roleName",
+                "accountId": "1234567890",
+                "userName": "roleName"
+            },
+            "webIdFederationData": {},
+            "attributes": {
+                "mfaAuthenticated": "false",
+                "creationDate": "2000-01-01T00:00:00Z"
+            }
+        }
+    },
+    "eventTime": "2000-01-01T00:00:00Z",
+    "eventSource": "organizations.amazonaws.com",
+    "eventName": "TagResource",
+    "awsRegion": "us-east-1",
+    "sourceIPAddress": "127.0.0.1",
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.14; rv:68.0) Gecko/20100101 Firefox/68.0, aws-internal/3 aws-sdk-java/1.11.783 Linux/4.9.184-0.1.ac.235.83.329.metal1.x86_64 OpenJDK_64-Bit_Server_VM/25.252-b09 java/1.8.0_252 vendor/Oracle_Corporation",
+    "requestParameters": {
+        "tags": [
+            {
+                "value": "your.hostedzone.name",
+                "key": "r53zone"
+            }
+        ],
+        "resourceId": "987654321"
+    },
+    "responseElements": null,
+    "requestID": "e9b5f3a3-e4d3-45f3-8992-fec5872d8dcd",
+    "eventID": "62d6cd80-cd7a-4d62-b599-71e9f243ebed",
+    "eventType": "AwsApiCall",
+    "recipientAccountId": "1234567890"
+}

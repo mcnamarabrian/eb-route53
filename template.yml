@@ -1,0 +1,270 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: SAM template to create Route53 hosted zones when a new Organization is tagged with *TagName*.
+
+Parameters:
+  TagName:
+    Type: String
+    Default: r53zone
+
+  AlarmRecipientEmailAddress:
+    Type: String
+    AllowedPattern: '[^\s@]+@[^\s@]+\.[^\s@]+'
+    Default: email@domain.tld
+    ConstraintDescription: Enter a valid email address
+
+Resources:  
+  CloudTrailBucket:
+    Type: AWS::S3::Bucket
+  
+  TrailForOrgData:
+    DependsOn: CloudTrailBucketPolicy
+    Type: AWS::CloudTrail::Trail
+    Properties: 
+      S3BucketName: !Ref CloudTrailBucket
+      EventSelectors: 
+        - DataResources:
+          - Type: 'AWS::S3::Object'
+            Values:
+              - !Sub |-
+                arn:aws:s3:::${CloudTrailBucket}/
+          ReadWriteType: WriteOnly
+      IsLogging: true
+  
+  CloudTrailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DependsOn: CloudTrailBucket
+    Properties: 
+      Bucket: !Ref CloudTrailBucket
+      PolicyDocument: 
+          Version: "2012-10-17"
+          Statement: 
+            - 
+              Sid: "AWSCloudTrailAclCheck"
+              Effect: "Allow"
+              Principal: 
+                Service: "cloudtrail.amazonaws.com"
+              Action: "s3:GetBucketAcl"
+              Resource: !Sub |-
+                  arn:aws:s3:::${CloudTrailBucket}
+            - 
+              Sid: "AWSCloudTrailWrite"
+              Effect: "Allow"
+              Principal: 
+                Service: "cloudtrail.amazonaws.com"
+              Action: "s3:PutObject"
+              Resource:
+                !Sub |-
+                  arn:aws:s3:::${CloudTrailBucket}/AWSLogs/${AWS::AccountId}/*
+              Condition: 
+                StringEquals:
+                  s3:x-amz-acl: "bucket-owner-full-control"
+
+  ProcessingQueuePolicy:
+    # https://forums.aws.amazon.com/message.jspa?messageID=743094
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref ProcessingQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - 
+            Effect: Allow
+            Principal:
+              AWS: '*'
+            Action:
+              - sqs:SendMessage
+            Resource: !GetAtt ProcessingQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt ProcessingRule.Arn
+
+  ProcessingRule:
+    Type: AWS::Events::Rule
+    DependsOn:
+      - ProcessingQueue
+    Properties:
+      Description: Rule to capture TagResource from organizations.amazonaws.com
+      EventPattern:
+        source:
+          - aws.organizations
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - organizations.amazonaws.com
+          eventName:
+            - TagResource
+      State: 'ENABLED'
+      Targets:
+        - Arn: !GetAtt ProcessingQueue.Arn
+          Id: Route53ProcessingQueue
+
+  ProcessingQueue:
+    Type: AWS::SQS::Queue
+    DependsOn: ProcessingDlq
+    Properties:
+      VisibilityTimeout: 60
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ProcessingDlq.Arn
+        maxReceiveCount: 5
+
+  ProcessingDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 300
+          
+  ProcessingFunction:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Description: Add a Route53 Zone when a tag is created on an Organization
+      Handler: index.handler
+      Runtime: python3.6
+      CodeUri: ./src/create_hosted_zone/
+      MemorySize: 256
+      Timeout: 10
+      Tracing: Active
+      Policies:
+        - SQSPollerPolicy:
+            QueueName:
+              !GetAtt ProcessingQueue.Arn
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - xray:PutTraceSegments
+                - xray:PutTelemetryRecords
+                - xray:GetSamplingRules
+                - xray:GetSamplingTargets
+                - xray:GetSamplingStatisticSummaries
+              Resource: '*'
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - route53:CreateHostedZone
+              Resource: '*'
+      Environment:
+        Variables:
+          TAG_NAME: !Ref TagName
+          PROCESSING_QUEUE: !Ref ProcessingQueue
+      Events:
+        ProcessingQueueReaderEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ProcessingQueue.Arn
+            BatchSize: 10
+
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlarmRecipientEmailAddress
+
+  ProcessingDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Alarm if ProcessingDLQ has any messages
+      AlarmActions:
+        - Ref: AlarmTopic
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt ProcessingDlq.QueueName
+
+  # ConversionTargetBucket:
+  #   Type: AWS::S3::Bucket
+
+  # SentimentQueue:
+  #   Type: AWS::SQS::Queue
+  #   DependsOn: SentimentDlq
+  #   Properties:
+  #     VisibilityTimeout: 60
+  #     RedrivePolicy:
+  #       deadLetterTargetArn: !GetAtt SentimentDlq.Arn
+  #       maxReceiveCount: 5
+
+  # SentimentDlq:
+  #   Type: AWS::SQS::Queue
+  #   Properties:
+  #     VisibilityTimeout: 300
+
+  # SentimentFunction:
+  #   Type: 'AWS::Serverless::Function'
+  #   Properties:
+  #     Description: Detect and store sentiment from uploaded S3 objects
+  #     Handler: sentiment.handler
+  #     Runtime: python3.6
+  #     CodeUri: ./src/sentiment/
+  #     MemorySize: 256
+  #     Timeout: 10
+  #     Tracing: Active
+  #     Policies:
+  #       - SQSPollerPolicy:
+  #           QueueName:
+  #             !GetAtt SentimentQueue.Arn
+  #       - Version: '2012-10-17'
+  #         Statement:
+  #           - Effect: Allow
+  #             Action:
+  #               - s3:GetObject
+  #               - s3:GetObjectAcl
+  #               - s3:GetObjectVersion
+  #             Resource:
+  #               Fn::Join:
+  #                 - ''
+  #                 - - 'arn:aws:s3:::'
+  #                   - Ref: InputBucket
+  #                   - '/*'
+  #           - Effect: Allow
+  #             Action:
+  #               - s3:ListBucket
+  #             Resource: !GetAtt InputBucket.Arn
+  #       - Version: '2012-10-17'
+  #         Statement:
+  #           - Effect: Allow
+  #             Action:
+  #               - xray:PutTraceSegments
+  #               - xray:PutTelemetryRecords
+  #               - xray:GetSamplingRules
+  #               - xray:GetSamplingTargets
+  #               - xray:GetSamplingStatisticSummaries
+  #             Resource: '*'
+  #       - Version: '2012-10-17'
+  #         Statement:
+  #           - Effect: Allow
+  #             Action:
+  #               - comprehend:DetectSentiment
+  #             Resource: '*'
+  #       - Version: '2012-10-17'
+  #         Statement:
+  #           - Effect: Allow
+  #             Action: 
+  #               - dynamodb:PutItem
+  #             Resource: !GetAtt SentimentTable.Arn
+  #       - Version: '2012-10-17'
+  #         Statement:
+  #           - Effect: Allow
+  #             Action:
+  #               - sqs:DeleteMessage
+  #             Resource: !GetAtt SentimentQueue.Arn
+  #     Environment:
+  #       Variables:
+  #         SENTIMENT_TABLE: !Ref SentimentTable
+  #         SENTIMENT_QUEUE: !Ref SentimentQueue
+  #         LOG_LEVEL: !Ref SentimentLogLevel
+  #     Events:
+  #       SentimentQueueReaderEvent:
+  #         Type: SQS
+  #         Properties:
+  #           Queue: !GetAtt SentimentQueue.Arn
+  #           BatchSize: 10

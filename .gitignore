@@ -1,0 +1,4 @@
+.aws-sam
+packaged-template.yml
+venv
+.vscode
