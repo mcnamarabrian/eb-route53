@@ -96,6 +96,9 @@ Resources:
             - organizations.amazonaws.com
           eventName:
             - TagResource
+          requestParameters:
+            tags:
+              "key": [ !Ref TagName ]
       State: 'ENABLED'
       Targets:
         - Arn: !GetAtt ProcessingQueue.Arn
